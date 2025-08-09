@@ -33,7 +33,7 @@ def draw_arms(img, keypoints, threshold):
             cv2.circle(img, (int(x),int(y)), 5, (0,0,255), -1)
 
 def main():
-    model     = YOLO("yolo11n-pose.pt")
+    model     = YOLO("modelos/yolo11n-pose.pt")
     cap       = cv2.VideoCapture(0)
     prev_kpts = None
 

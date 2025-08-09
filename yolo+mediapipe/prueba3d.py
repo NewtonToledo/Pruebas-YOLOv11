@@ -172,7 +172,7 @@ def plot_3d_arms(ax, keypoints_3d, threshold):
 
 def main():
 
-    yolo_model = YOLO("yolo11n-pose.pt")
+    yolo_model = YOLO("modelos/yolo11n-pose.pt")
     pose_processor = mp_pose.Pose(
         min_detection_confidence=0.5,
         min_tracking_confidence=0.5,

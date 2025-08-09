@@ -259,7 +259,7 @@ def plot_3d_arms(ax, keypoints_3d, threshold):
 
 def main():
     # Inicializar YOLO y estimador geométrico
-    yolo_model = YOLO("yolo11n-pose.pt")
+    yolo_model = YOLO("modelos/yolo11n-pose.pt")
     z_estimator = GeometricZEstimator(focal_length=370, avg_shoulder_width=0.5)
     
     cap = cv2.VideoCapture(0)
