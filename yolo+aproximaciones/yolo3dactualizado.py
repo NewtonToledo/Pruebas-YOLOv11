@@ -4,7 +4,6 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 import math
 import time
 import torch
@@ -61,17 +60,7 @@ ARMS_KEYPOINTS = [
     RIGHT_SHOULDER, RIGHT_ELBOW, RIGHT_WRIST
 ]
 
-def estimate_base_distance_static(k2d, focal_length, avg_shoulder_width):
-    if len(k2d) <= max(LEFT_SHOULDER, RIGHT_SHOULDER):
-        return 2.0
-    if (k2d[LEFT_SHOULDER][2] < KP_THRESHOLD or k2d[RIGHT_SHOULDER][2] < KP_THRESHOLD):
-        return 2.0
-    lsx, lsy = k2d[LEFT_SHOULDER][:2]; rsx, rsy = k2d[RIGHT_SHOULDER][:2]
-    sw_px = math.sqrt((lsx-rsx)**2 + (lsy-rsy)**2)
-    if sw_px > 10:
-        d = (avg_shoulder_width * float(focal_length)) / sw_px
-        return max(0.5, min(d, 5.0))
-    return 2.0
+
 
 class GeometricZEstimator:
     def __init__(self):
@@ -132,9 +121,18 @@ class GeometricZEstimator:
         if all(i < len(k2d) and k2d[i][2] > KP_THRESHOLD for i in idxs):
             sh=k2d[s][:2]; el=k2d[e][:2]; wr=k2d[w][:2]
             ang_v = self.calculate_angle_with_vertical(sh[0],sh[1],el[0],el[1])
-            ang_r = self.calculate_relative_angle(sh[0],sh[1],el[0],el[1],wr[0],wr[1])
             depth = math.sin(ang_v * DEG2RAD) * self.arm_angle_impact
-            ext = ((abs(ang_r)-90)/90 * self.forearm_angle_impact) if abs(ang_r) > 90 else 0
+            ang_r = self.calculate_relative_angle(sh[0],sh[1],el[0],el[1],wr[0],wr[1])
+            abs_r = abs(ang_r)
+            ramp = max(0.0, (abs_r - 70.0) / 110.0)   # 0→1 entre 70° y 180°
+            ext_sign = 1.0 if ang_r >= 0 else -1.0
+            ext = ramp * self.forearm_angle_impact * ext_sign
+
+            # --- modulación por acortamiento (foreshortening) 2D ---
+            len_se = self.distance_2d(sh, el) + 1e-6
+            len_ew = self.distance_2d(el, wr)
+            shortening = 1.0 - min(1.0, len_ew / len_se)   # 0..1 (más acortamiento → más hacia cámara)
+            ext *= (0.5 + 0.5 * shortening)
             zc[s]=base; zc[e]=base+depth; zc[w]=base+depth+ext
         return zc
 
@@ -165,17 +163,21 @@ def try_set_anchor(k2d, z_coords, img_w, img_h):
     ok_rs = RIGHT_SHOULDER < len(k2d) and k2d[RIGHT_SHOULDER][2] >= ANCHOR_CONF
     if not (ok_ls and ok_rs):
         return
+
+    # Necesitamos Z de ambos hombros; si no están, no anclamos todavía
+    z_ls = z_coords.get(LEFT_SHOULDER, None)
+    z_rs = z_coords.get(RIGHT_SHOULDER, None)
+    if (z_ls is None) or (z_rs is None):
+        return
+
     lsx, lsy = k2d[LEFT_SHOULDER][:2]
     rsx, rsy = k2d[RIGHT_SHOULDER][:2]
     cx = ((lsx + rsx) * 0.5) / float(img_w)
     cy = ((lsy + rsy) * 0.5) / float(img_h)
-    z_ls = z_coords.get(LEFT_SHOULDER, None)
-    z_rs = z_coords.get(RIGHT_SHOULDER, None)
-    if z_ls is not None and z_rs is not None:
-        cz = 0.5 * (z_ls + z_rs)
-    else:
-        cz = estimate_base_distance_static(k2d, FOCAL_LENGTH_PX, 0.45)
+    cz = 0.5 * (z_ls + z_rs)
+
     ANCHOR.update({'set': True, 'x': cx, 'y': cy, 'z': float(cz)})
+
 
 plt.ion()
 fig = plt.figure(figsize=(8, 6))
@@ -204,28 +206,55 @@ def init_plot3d(ax3d):
 
 def update_3d_artists(k3d):
     for li, (i, j) in enumerate(ARMS_CONNECTIONS):
-        ok = (i < len(k3d) and j < len(k3d) and k3d[i][3] > KP_THRESHOLD and k3d[j][3] > KP_THRESHOLD)
-        if ok and ANCHOR['set']:
-            x1 = (k3d[i][0]-ANCHOR['x'])*2.0; y1 = (k3d[i][1]-ANCHOR['y'])*2.0; z1 = (k3d[i][2]-ANCHOR['z'])
-            x2 = (k3d[j][0]-ANCHOR['x'])*2.0; y2 = (k3d[j][1]-ANCHOR['y'])*2.0; z2 = (k3d[j][2]-ANCHOR['z'])
-            plot3d.lines3d[li].set_data_3d([x1, x2], [z1, z2], [y1, y2])
+        ok = (i < len(k3d) and j < len(k3d) and k3d[i][3] > KP_THRESHOLD and k3d[j][3] > KP_THRESHOLD and ANCHOR['set'])
+        if ok:
+            x1, y1, z1 = k3d[i][:3]
+            x2, y2, z2 = k3d[j][:3]
+            plot3d.lines3d[li].set_data_3d([x1, x2], [z1, z2], [y1, y2])  # ojo: Y del plot = tu Z rel
         else:
             plot3d.lines3d[li].set_data_3d([], [], [])
     for di, idx in enumerate(ARMS_KEYPOINTS):
         if idx < len(k3d) and k3d[idx][3] > KP_THRESHOLD and ANCHOR['set']:
-            x = (k3d[idx][0]-ANCHOR['x'])*2.0; y = (k3d[idx][1]-ANCHOR['y'])*2.0; z = (k3d[idx][2]-ANCHOR['z'])
+            x, y, z = k3d[idx][:3]
             plot3d.dots3d[di]._offsets3d = ([x], [z], [y])
         else:
             plot3d.dots3d[di]._offsets3d = ([], [], [])
 
-def create_3d_keypoints_geometric(k2d, z_coords, img_w, img_h):
-    out=[]
-    for i,(x,y,c) in enumerate(k2d):
-        if i in ARMS_KEYPOINTS and c > KP_THRESHOLD:
-            out.append([x/img_w, y/img_h, z_coords.get(i,0.0), c])
+def create_3d_keypoints_normalized(k2d, z_coords, img_w, img_h, base_dist, anchor, xy_center=None):
+    """
+    Devuelve [x_rel, y_rel, z_rel, conf] para cada keypoint de brazos:
+      - x_rel, y_rel: (pos_norm - anchor) * 2.0  -> ~[-1,1]
+      - z_rel: (z_m - anchor_z) / base_dist     -> adimensional
+    """
+    out = []
+    denom = max(base_dist, 1e-6)
+    cx = anchor['x'] if (xy_center is None) else xy_center[0]
+    cy = anchor['y'] if (xy_center is None) else xy_center[1]
+    for i, (x, y, c) in enumerate(k2d):
+        if i in ARMS_KEYPOINTS and c > KP_THRESHOLD and (i in z_coords):
+            xn = x / float(img_w)
+            yn = y / float(img_h)
+            x_rel = (xn - cx) * 2.0
+            y_rel = (yn - cy) * 2.0
+            z_rel = (z_coords[i] - anchor['z']) / denom
+            out.append([x_rel, y_rel, z_rel, c])
         else:
-            out.append([0,0,0,0])
+            out.append([0, 0, 0, 0])
     return np.array(out)
+
+def get_xy_center_current(k2d, img_w, img_h, fallback_anchor):
+    """Devuelve (cx, cy) normalizados del centro de hombros del FRAME ACTUAL.
+       Si no hay hombros confiables, usa el anchor como respaldo."""
+    ok_ls = LEFT_SHOULDER < len(k2d) and k2d[LEFT_SHOULDER][2] > KP_THRESHOLD
+    ok_rs = RIGHT_SHOULDER < len(k2d) and k2d[RIGHT_SHOULDER][2] > KP_THRESHOLD
+    if ok_ls and ok_rs:
+        lsx, lsy = k2d[LEFT_SHOULDER][:2]
+        rsx, rsy = k2d[RIGHT_SHOULDER][:2]
+        cx = ((lsx + rsx) * 0.5) / float(img_w)
+        cy = ((lsy + rsy) * 0.5) / float(img_h)
+        return cx, cy
+    return fallback_anchor['x'], fallback_anchor['y']
+
 
 def main():
     cap = cv2.VideoCapture(0)
@@ -292,10 +321,27 @@ def main():
         )
         prev_kpts = smoothed_kpts
 
+        # 1) Estimación Z (m)
         z_coords = z_estimator.estimate_z_hybrid(smoothed_kpts)
-        kpts_3d = create_3d_keypoints_geometric(smoothed_kpts, z_coords, img_w, img_h)
 
+        # 2) Distancia base del frame (m) — la usaremos para normalizar Z
+        base_dist = z_estimator.estimate_base_distance(smoothed_kpts)
+
+        # 3) Intentar fijar ancla (usa hombros + z ya estimada)
         try_set_anchor(smoothed_kpts, z_coords, img_w, img_h)
+        # Centro de hombros del frame actual para centrar X,Y (dinámico)
+        xy_center = get_xy_center_current(smoothed_kpts, img_w, img_h, ANCHOR)
+
+
+        # 4) Construir kpts 3D en UNIDADES NORMALIZADAS (relativas al ancla)
+        if ANCHOR['set']:
+            kpts_3d = create_3d_keypoints_normalized(
+                smoothed_kpts, z_coords, img_w, img_h, base_dist, ANCHOR, xy_center=xy_center
+            )
+        else:
+            # sin ancla aún → no dibujar (conf=0)
+            kpts_3d = np.zeros((len(smoothed_kpts), 4), dtype=float)
+
 
         #Overlays informativos
         info_text = f"YOLO keypoints: {len(smoothed_kpts)} | Z coords: {len(z_coords)}"
