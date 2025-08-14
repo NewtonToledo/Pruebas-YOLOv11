@@ -60,8 +60,6 @@ ARMS_KEYPOINTS = [
     RIGHT_SHOULDER, RIGHT_ELBOW, RIGHT_WRIST
 ]
 
-
-
 class GeometricZEstimator:
     def __init__(self):
         self.focal_length = None
@@ -124,14 +122,13 @@ class GeometricZEstimator:
             depth = math.sin(ang_v * DEG2RAD) * self.arm_angle_impact
             ang_r = self.calculate_relative_angle(sh[0],sh[1],el[0],el[1],wr[0],wr[1])
             abs_r = abs(ang_r)
-            ramp = max(0.0, (abs_r - 70.0) / 110.0)   # 0→1 entre 70° y 180°
+            ramp = max(0.0, (abs_r - 70.0) / 110.0)   # 0-1 entre 70 y 180 grados
             ext_sign = 1.0 if ang_r >= 0 else -1.0
             ext = ramp * self.forearm_angle_impact * ext_sign
 
-            # --- modulación por acortamiento (foreshortening) 2D ---
             len_se = self.distance_2d(sh, el) + 1e-6
             len_ew = self.distance_2d(el, wr)
-            shortening = 1.0 - min(1.0, len_ew / len_se)   # 0..1 (más acortamiento → más hacia cámara)
+            shortening = 1.0 - min(1.0, len_ew / len_se)   # 0-1 (mas acortamiento==mas hacia camara)
             ext *= (0.5 + 0.5 * shortening)
             zc[s]=base; zc[e]=base+depth; zc[w]=base+depth+ext
         return zc
@@ -164,7 +161,6 @@ def try_set_anchor(k2d, z_coords, img_w, img_h):
     if not (ok_ls and ok_rs):
         return
 
-    # Necesitamos Z de ambos hombros; si no están, no anclamos todavía
     z_ls = z_coords.get(LEFT_SHOULDER, None)
     z_rs = z_coords.get(RIGHT_SHOULDER, None)
     if (z_ls is None) or (z_rs is None):
@@ -177,7 +173,6 @@ def try_set_anchor(k2d, z_coords, img_w, img_h):
     cz = 0.5 * (z_ls + z_rs)
 
     ANCHOR.update({'set': True, 'x': cx, 'y': cy, 'z': float(cz)})
-
 
 plt.ion()
 fig = plt.figure(figsize=(8, 6))
@@ -221,11 +216,6 @@ def update_3d_artists(k3d):
             plot3d.dots3d[di]._offsets3d = ([], [], [])
 
 def create_3d_keypoints_normalized(k2d, z_coords, img_w, img_h, base_dist, anchor, xy_center=None):
-    """
-    Devuelve [x_rel, y_rel, z_rel, conf] para cada keypoint de brazos:
-      - x_rel, y_rel: (pos_norm - anchor) * 2.0  -> ~[-1,1]
-      - z_rel: (z_m - anchor_z) / base_dist     -> adimensional
-    """
     out = []
     denom = max(base_dist, 1e-6)
     cx = anchor['x'] if (xy_center is None) else xy_center[0]
@@ -243,8 +233,6 @@ def create_3d_keypoints_normalized(k2d, z_coords, img_w, img_h, base_dist, ancho
     return np.array(out)
 
 def get_xy_center_current(k2d, img_w, img_h, fallback_anchor):
-    """Devuelve (cx, cy) normalizados del centro de hombros del FRAME ACTUAL.
-       Si no hay hombros confiables, usa el anchor como respaldo."""
     ok_ls = LEFT_SHOULDER < len(k2d) and k2d[LEFT_SHOULDER][2] > KP_THRESHOLD
     ok_rs = RIGHT_SHOULDER < len(k2d) and k2d[RIGHT_SHOULDER][2] > KP_THRESHOLD
     if ok_ls and ok_rs:
@@ -254,7 +242,6 @@ def get_xy_center_current(k2d, img_w, img_h, fallback_anchor):
         cy = ((lsy + rsy) * 0.5) / float(img_h)
         return cx, cy
     return fallback_anchor['x'], fallback_anchor['y']
-
 
 def main():
     cap = cv2.VideoCapture(0)
@@ -321,27 +308,20 @@ def main():
         )
         prev_kpts = smoothed_kpts
 
-        # 1) Estimación Z (m)
         z_coords = z_estimator.estimate_z_hybrid(smoothed_kpts)
 
-        # 2) Distancia base del frame (m) — la usaremos para normalizar Z
         base_dist = z_estimator.estimate_base_distance(smoothed_kpts)
 
-        # 3) Intentar fijar ancla (usa hombros + z ya estimada)
         try_set_anchor(smoothed_kpts, z_coords, img_w, img_h)
-        # Centro de hombros del frame actual para centrar X,Y (dinámico)
+
         xy_center = get_xy_center_current(smoothed_kpts, img_w, img_h, ANCHOR)
 
-
-        # 4) Construir kpts 3D en UNIDADES NORMALIZADAS (relativas al ancla)
         if ANCHOR['set']:
             kpts_3d = create_3d_keypoints_normalized(
                 smoothed_kpts, z_coords, img_w, img_h, base_dist, ANCHOR, xy_center=xy_center
             )
         else:
-            # sin ancla aún → no dibujar (conf=0)
             kpts_3d = np.zeros((len(smoothed_kpts), 4), dtype=float)
-
 
         #Overlays informativos
         info_text = f"YOLO keypoints: {len(smoothed_kpts)} | Z coords: {len(z_coords)}"
